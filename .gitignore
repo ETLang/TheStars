@@ -1,1 +1,9 @@
-.exe
+AnalystStudies/StudyProjectBackend/StudyProjectBackend/bin/
+AnalystStudies/StudyProjectBackend/StudyProjectBackend/obj/
+
+*.user
+
+AnalystStudies/StudyProjectBackend/.vs/
+IMDBScraper/.vs/
+IMDBScraper/bin/
+IMDBScraper/obj/
