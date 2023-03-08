@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -9,21 +10,37 @@ namespace IMDBScraper
 {
     public class TheStarsDB
     {
-        public const string ImageFolder = @"G:\TheStarsSourceData\Images";
-        public const string DataRoot = @"G:\TheStarsSourceData";
-        public static readonly string ShowHeaderListingPath = Path.Combine(DataRoot, "AllShowHeaders.json");
-        public static readonly string ShowDBPath = Path.Combine(DataRoot, "Shows.json");
-        public static readonly string PeopleDBPath = Path.Combine(DataRoot, "People.json");
-        public static readonly string RoleDBPath = Path.Combine(DataRoot, "Roles.json");
-        public static readonly string AnalysisPath = Path.Combine(DataRoot, "Analysis.txt");
+        public readonly string DataRoot;
+        public readonly string ImageFolder;
+        public readonly string ShowHeaderListingPath;
+        public readonly string ShowDBPath;
+        public readonly string PeopleDBPath;
+        public readonly string RoleDBPath;
+        public readonly string AnalysisPath;
 
         ConcurrentDictionary<long, ShowHeader> showHeaders = new ConcurrentDictionary<long, ShowHeader>();
         ConcurrentDictionary<long, Show> shows = new ConcurrentDictionary<long, Show>();
         ConcurrentDictionary<long, Person> people = new ConcurrentDictionary<long, Person>();
         RoleDB roleDB = new RoleDB();
 
-        public TheStarsDB()
+        public TheStarsDB(string dataRoot)
         {
+            DataRoot = dataRoot;
+
+            ImageFolder = Path.Combine(DataRoot, "Images");
+            ShowHeaderListingPath = Path.Combine(DataRoot, "AllShowHeaders.json");
+            ShowDBPath = Path.Combine(DataRoot, "Shows.json");
+            PeopleDBPath = Path.Combine(DataRoot, "People.json");
+            RoleDBPath = Path.Combine(DataRoot, "Roles.json");
+            AnalysisPath = Path.Combine(DataRoot, "Analysis.txt");
+
+            // Create folders, if necessary
+            if(!Directory.Exists(DataRoot)) 
+                Directory.CreateDirectory(DataRoot);
+
+            if(!Directory.Exists(ImageFolder))
+                Directory.CreateDirectory(ImageFolder);
+
             // Load known data
             var showHeaderList = LoadList<ShowHeader>(ShowHeaderListingPath);
             foreach (var header in showHeaderList)
@@ -47,8 +64,8 @@ namespace IMDBScraper
         public bool HasShow(long id) => shows.ContainsKey(id);
         public bool HasPerson(long id) => people.ContainsKey(id);
 
-        public bool TryGetShow(long id, out Show show) { return shows.TryGetValue(id, out show); }
-        public bool TryGetPerson(long id, out Person person) { return people.TryGetValue(id, out person); }
+        public bool TryGetShow(long id, [MaybeNullWhen(false)] out Show show) { return shows.TryGetValue(id, out show); }
+        public bool TryGetPerson(long id, [MaybeNullWhen(false)] out Person person) { return people.TryGetValue(id, out person); }
 
         public string GetLocalImagePath(string url)
         {
@@ -65,7 +82,7 @@ namespace IMDBScraper
             return roleDB.GetOrCreate(type, showId, personId);
         }
 
-        public bool TryGetRole(long id, out Role? role)
+        public bool TryGetRole(long id, [MaybeNullWhen(false)] out Role role)
         {
             if (!roleDB.Has(id))
             {
@@ -89,7 +106,7 @@ namespace IMDBScraper
 
         public void Merge(ShowHeader header)
         {
-            ShowHeader target;
+            ShowHeader? target;
 
             lock (showHeaders)
             {
@@ -112,7 +129,7 @@ namespace IMDBScraper
             target.title = header.title ?? target.title;
             target.url = header.url ?? target.url;
 
-            Show show;
+            Show? show;
 
             lock (shows)
             {
@@ -137,7 +154,7 @@ namespace IMDBScraper
             if (show == null)
                 return;
 
-            Show target;
+            Show? target;
 
             lock (shows)
             {
@@ -190,7 +207,7 @@ namespace IMDBScraper
             if (person == null)
                 return;
 
-            Person target;
+            Person? target;
 
             lock (people)
             {

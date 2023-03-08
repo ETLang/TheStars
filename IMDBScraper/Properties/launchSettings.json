@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "IMDBScraper": {
+      "commandName": "Project",
+      "commandLineArgs": "100 20 ..\\..\\..\\..\\TestDB_Small"
+    }
+  }
+}

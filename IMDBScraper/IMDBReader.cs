@@ -23,8 +23,9 @@ namespace IMDBScraper
 
         public bool ShutdownRequested { get; set; }
 
-        public const int MaxActiveFetches = 16;
-        public static readonly string CacheFolder = @"D:\Cache";
+        public const int MaxActiveFetches = 1;
+        public const int TargetFetchesPerMinute = 500;
+        public static readonly string CacheFolder = @"C:\temp\IMDBScraper\Cache";
 
         static readonly Regex url_ShowIdRecognizer = new Regex(@"tt(?<id>[0-9]+)", RegexOptions.Compiled);
         static readonly Regex url_PersonIdRecognizer = new Regex(@"nm(?<id>[0-9]+)", RegexOptions.Compiled);
@@ -104,14 +105,15 @@ namespace IMDBScraper
         SHA512 hashCodec = SHA512.Create();
         int activeFetches = 0;
         Queue<TaskCompletionSource> fetchQueue = new Queue<TaskCompletionSource>();
+        Stopwatch stopwatch = new Stopwatch();
 
         public IMDBReader()
         {
             if (!Directory.Exists(CacheFolder))
                 Directory.CreateDirectory(CacheFolder);
 
-            ServicePointManager.FindServicePoint(new Uri("https://www.imdb.com")).ConnectionLimit = MaxActiveFetches;
             httpClient = new HttpClient();
+            stopwatch.Start();
         }
 
         #region Procedures
@@ -152,6 +154,9 @@ namespace IMDBScraper
                 var titleElement = entry.SelectSingleNode(SearchPage_TitlePath);
                 var title = titleElement?.InnerText;
                 var showUrl = stripRef(titleElement?.Attributes?["href"]?.InnerText ?? "");
+
+                if (showUrl == null) continue;
+
                 var id = long.Parse(url_ShowIdRecognizer.Match(showUrl).Groups["id"].Value);
                 var tinyThumbUrl = entry.SelectSingleNode(SearchPage_TinyThumbPath)?.InnerText ?? throw new Exception();
                 var posterUrl = stripImageModifiers(tinyThumbUrl);
@@ -262,21 +267,24 @@ namespace IMDBScraper
                 {
                     var source = Json.Deserialize<Source.Show>(cleanTitleDetailsPage(fetchedResult));
 
-                    show.releaseDate = Show_TranslateSourceReleaseDate(source.datePublished);
-                    // endDate
-                    show.duration = Show_TranslateDuration(source.duration);
-                    show.contentRating = Show_TranslateContentRating(source.contentRating);
-                    show.qualityRating = source.aggregateRating?.ratingValue;
-                    show.votes = source.aggregateRating?.ratingCount;
-                    show.genre = source.genre;
-                    show.description = source.description;
-                    show.trailerUrl = source.trailer?.url;
-                    show.trailerThumbnailUrl = source.trailer?.thumbnailUrl;
-                    // trailerThumbnailLocalPath
-                    // credits
-                    // episodes
+                    if (source != null)
+                    {
+                        show.releaseDate = Show_TranslateSourceReleaseDate(source.datePublished);
+                        // endDate
+                        show.duration = Show_TranslateDuration(source.duration);
+                        show.contentRating = Show_TranslateContentRating(source.contentRating);
+                        show.qualityRating = source.aggregateRating?.ratingValue;
+                        show.votes = source.aggregateRating?.ratingCount;
+                        show.genre = source.genre;
+                        show.description = source.description;
+                        show.trailerUrl = source.trailer?.url;
+                        show.trailerThumbnailUrl = source.trailer?.thumbnailUrl;
+                        // trailerThumbnailLocalPath
+                        // credits
+                        // episodes
 
-                    gotSmall = true;
+                        gotSmall = true;
+                    }
                 }
 
                 if (force || !gotBig)
@@ -284,9 +292,9 @@ namespace IMDBScraper
                     var bigsource = Json.Deserialize<Source.BigShow>(cleanSeriesDetailsPage(fetchedResult));
                     var bigMain = bigsource?.props?.pageProps?.mainColumnData;
 
-                    if (bigMain != null)
+                    if (bigMain != null && bigsource != null)
                     {
-                        show.type = Show_TranslateShowType(bigsource?.props?.pageProps?.aboveTheFoldData?.titleType?.id);
+                        show.type = Show_TranslateShowType(bigsource.props?.pageProps?.aboveTheFoldData?.titleType?.id);
                         show.principalCredits = Show_TranslatePrincipalCredits(bigsource, show.id, db);
                         show.totalEpisodes = bigMain.episodes?.totalEpisodes?.total;
                         show.totalSeasons = bigMain.episodes?.seasons?.Count;
@@ -326,7 +334,7 @@ namespace IMDBScraper
         const string CreditsPage_ActorRolePath = "./../../following-sibling::td[@class='character']/a";
         const string CreditsPage_ProducerPath = "/div/h4[@id='producer']/following-sibling::table[1]/tbody/tr/td[@class='name']/a/@href";
         const string CreditsPage_ProducerRolePath = "./../../following-sibling::td[@class='credit']";
-        public async Task ScrapeCredits(Show show, TheStarsDB db)
+        public async Task ScrapeCredits(Show show, TheStarsDB db, int maxActorsPerShow = 0)
         {
             var castUrl = fullCastUrl(show.id);
 
@@ -346,7 +354,7 @@ namespace IMDBScraper
                 bool hasActor = false;
                 bool hasProducer = false;
 
-                foreach (var directorElement in xml.SelectNodes(CreditsPage_DirectorPath).OfType<XmlNode>())
+                foreach (var directorElement in xml.SelectNodes(CreditsPage_DirectorPath).NullAsEmpty().OfType<XmlNode>())
                 {
                     var id = long.Parse(url_PersonIdRecognizer.Match(directorElement.InnerText).Groups["id"].Value);
                     var role = db.GetRole(RoleType.Director, show.id, id);
@@ -354,7 +362,7 @@ namespace IMDBScraper
                     hasDirector = true;
                 }
 
-                foreach (var writerElement in xml.SelectNodes(CreditsPage_WriterNamePath).OfType<XmlNode>())
+                foreach (var writerElement in xml.SelectNodes(CreditsPage_WriterNamePath).NullAsEmpty().OfType<XmlNode>())
                 {
                     var id = long.Parse(url_PersonIdRecognizer.Match(writerElement.InnerText).Groups["id"].Value);
                     var role = db.GetRole(RoleType.Writer, show.id, id);
@@ -364,17 +372,22 @@ namespace IMDBScraper
                     role.name = writerElement.SelectSingleNode(CreditsPage_WriterRolePath)?.InnerText.Trim();
                 }
 
-                foreach (var actorElement in xml.SelectNodes(CreditsPage_ActorPath).OfType<XmlNode>())
+                int actors = 0;
+                foreach (var actorElement in xml.SelectNodes(CreditsPage_ActorPath).NullAsEmpty().OfType<XmlNode>())
                 {
+                    if (maxActorsPerShow != 0 && actors >= maxActorsPerShow)
+                        break;
+
                     var id = long.Parse(url_PersonIdRecognizer.Match(actorElement.InnerText).Groups["id"].Value);
                     var role = db.GetRole(RoleType.Actor, show.id, id);
                     credits.Add(role.id);
                     hasActor = true;
+                    actors++;
 
                     role.name = actorElement.SelectSingleNode(CreditsPage_ActorRolePath)?.InnerText.Trim();
                 }
 
-                foreach (var producerElement in xml.SelectNodes(CreditsPage_ProducerPath).OfType<XmlNode>())
+                foreach (var producerElement in xml.SelectNodes(CreditsPage_ProducerPath).NullAsEmpty().OfType<XmlNode>())
                 {
                     var id = long.Parse(url_PersonIdRecognizer.Match(producerElement.InnerText).Groups["id"].Value);
                     var role = db.GetRole(RoleType.Producer, show.id, id);
@@ -476,7 +489,7 @@ namespace IMDBScraper
                     show.totalSeasons = source?.props?.pageProps?.mainColumnData?.episodes?.seasons?.Count;
                 }
 
-                if (show.totalEpisodes == null || show.episodes.Count == show.totalEpisodes)
+                if (show.totalEpisodes == null || show.episodes == null || show.episodes.Count == show.totalEpisodes)
                     return new List<ShowHeader>();
 
                 if (show.totalSeasons == null)
@@ -485,13 +498,15 @@ namespace IMDBScraper
                 for (int season = 1; season <= show.totalSeasons; season++)
                 {
                     var xml = asXml(cleanEpisodeListingPage(await fetch(episodeListingUrl(show.id, season))));
-                    var episodeNodes = xml.SelectNodes(EpisodeListingPage_EpisodePath)?.OfType<XmlNode>();
+                    var episodeNodes = xml?.SelectNodes(EpisodeListingPage_EpisodePath)?.OfType<XmlNode>();
 
                     if (episodeNodes != null)
                         foreach (var node in episodeNodes)
                         {
                             var url = stripRef(node.SelectSingleNode(EpisodeListingPage_UrlPath)?.InnerText);
                             var episodeNode = node.SelectSingleNode(EpisodeListingPage_EpisodeNumberPath);
+
+                            if(url == null) continue;
 
                             var header = new ShowHeader
                             {
@@ -526,7 +541,7 @@ namespace IMDBScraper
 
         #region Utilities
 
-        public static async Task<FileStream?> PatientOpenWrite(string path)
+        public static async Task<FileStream> PatientOpenWrite(string path)
         {
             FileStream? file = null;
             for (int c = 0; c < 3; c++)
@@ -557,17 +572,15 @@ namespace IMDBScraper
 
         int parallelOps = 0;
 
-        public Task ParallelOp<T>(ICollection<T> source, string opname, Func<T, ValueTask> handler, bool slowDebug = false)
+        public Task ParallelOp<T>(ICollection<T> source, string opname, Func<T, ValueTask> handler, int threads = 0)
         {
             int total = source.Count;
             int n = 0;
             int pctk = 0;
 
             var options = new ParallelOptions();
-            if (slowDebug)
-                options.MaxDegreeOfParallelism = 1;
-            //else
-            //    options.MaxDegreeOfParallelism = 16;
+            if (threads != 0)
+                options.MaxDegreeOfParallelism = threads;
 
             return Parallel.ForEachAsync(source, options,
                 async (x, cancel) =>
@@ -641,13 +654,23 @@ namespace IMDBScraper
         string episodeListingUrl(long showId, int season)
             => $"https://www.imdb.com/title/tt{showId}/episodes?season={season}";
 
-        void PruneHistory(ConcurrentQueue<int> queue, int relevant)
+        float PruneHistory(ConcurrentQueue<long> queue)
         {
+            var now = stopwatch.ElapsedTicks;
+            var relevant = now - Stopwatch.Frequency * 60;
+
+            long oldest = 0;
+
             lock (queue)
             {
                 while (queue.TryPeek(out var next) && next < relevant)
                     queue.TryDequeue(out next);
+
+                if (!queue.TryPeek(out oldest))
+                    oldest = 0;
             }
+
+            return oldest == 0 ? 0.0f : (float)(queue.Count * (double)Stopwatch.Frequency / (double)(now - oldest));
         }
 
         Task EnqueueForFetch()
@@ -687,17 +710,24 @@ namespace IMDBScraper
             } while (tcs != null);
         }
 
-        ConcurrentQueue<int> _recentFetches = new ConcurrentQueue<int>();
+        ConcurrentQueue<long> _recentFetches = new ConcurrentQueue<long>();
+
         async Task<HttpContent> fetchContent(string uri)
         {
             HttpResponseMessage? response = null;
 
-            var now = Environment.TickCount;
-            var relevant = now - 60000;
-            _recentFetches.Enqueue(now);
-            PruneHistory(_recentFetches, relevant);
-
             await EnqueueForFetch();
+
+            while (true)
+            {
+                if (PruneHistory(_recentFetches) * 60 < TargetFetchesPerMinute)
+                {
+                    _recentFetches.Enqueue(stopwatch.ElapsedTicks);
+                    break;
+                }
+
+                Thread.Sleep(100);
+            }
 
             try
             {
@@ -771,29 +801,27 @@ namespace IMDBScraper
             }
         }
 
-        ConcurrentQueue<int> _recentCacheHits = new ConcurrentQueue<int>();
-        ConcurrentQueue<int> _recentCacheMisses = new ConcurrentQueue<int>();
+        ConcurrentQueue<long> _recentCacheHits = new ConcurrentQueue<long>();
+        ConcurrentQueue<long> _recentCacheMisses = new ConcurrentQueue<long>();
 
         public async Task<string> cachedFetch(string url, string cache)
         {
-            var now = Environment.TickCount;
-            var relevant = now - 60000;
             string output;
 
             if (!File.Exists(cache))
             {
-                _recentCacheMisses.Enqueue(now);
+                _recentCacheMisses.Enqueue(stopwatch.ElapsedTicks);
                 output = await fetch(url);
                 WriteCache(cache, output);
             }
             else
             {
-                _recentCacheHits.Enqueue(now);
+                _recentCacheHits.Enqueue(stopwatch.ElapsedTicks);
                 output = ReadCache(cache);
             }
 
-            PruneHistory(_recentCacheHits, relevant);
-            PruneHistory(_recentCacheMisses, relevant);
+            PruneHistory(_recentCacheHits);
+            PruneHistory(_recentCacheMisses);
 
             return output;
         }
@@ -868,7 +896,7 @@ namespace IMDBScraper
 
         string fixBadImageTags(string xml) => xml_imgFixer.Replace(xml, "/>");
 
-        string stripRef(string url) => url_RefRecognizer.Replace(url, "");
+        string? stripRef(string? url) => url == null ? null : url_RefRecognizer.Replace(url, "");
 
         static Regex ImageModifiers_ImageFluffRecognizer = new Regex(@"\.[^\.]*\.jpg", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         string? stripImageModifiers(string? url) => url == null ? null : ImageModifiers_ImageFluffRecognizer.Replace(url, ".jpg");
