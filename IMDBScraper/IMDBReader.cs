@@ -1,4 +1,4 @@
-﻿using ICSharpCode.SharpZipLib.GZip;
+using ICSharpCode.SharpZipLib.GZip;
 using IMDBScraper.Source;
 using System;
 using System.Collections.Concurrent;
