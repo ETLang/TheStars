@@ -1,9 +1,11 @@
-﻿using ICSharpCode.SharpZipLib.BZip2;
+using ICSharpCode.SharpZipLib.BZip2;
 using ICSharpCode.SharpZipLib.GZip;
 using IMDBScraper;
+using SixLabors.ImageSharp;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Reflection;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
@@ -17,7 +19,7 @@ const bool ENABLE_AUTOSAVE = false;
 const bool ENABLE_AUTOSAVE = true; // Just pulling cache files
 #endif
 
-const bool SCRAPE_SHOW_HEADERS = false;
+const bool SCRAPE_SHOW_HEADERS = true;
 const bool SCRAPE_SHOW_DETAILS = true;
 const bool SCRAPE_EPISODES = true;
 const bool SCRAPE_SHOW_CAST = true;
@@ -25,13 +27,21 @@ const bool SCRAPE_PEOPLE_DATA = true;
 const bool SCRAPE_SHOW_POSTERS = true;
 const bool SCRAPE_TRAILER_THUMBNAILS = true;
 const bool SCRAPE_PEOPLE_IMAGES = true;
-const bool NORMALIZE_IMAGE_SIZES = true;
-const bool GENERATE_THUMBNAILS = true;
+//const bool NORMALIZE_IMAGE_SIZES = true;
+//const bool GENERATE_THUMBNAILS = true;
 const bool VALIDATE_DB = true;
+
+if(args.Length != 3)
+{
+    Console.WriteLine($"Usage: {Path.GetFileNameWithoutExtension(Assembly.GetExecutingAssembly().GetName().Name)} <Desired Show Count> <Max Actors Per Show> <Output Folder>");
+    return;
+}
 
 Console.WriteLine("Loading Existing Database...");
 var reader = new IMDBReader();
-var db = new TheStarsDB();
+var db = new TheStarsDB(args[2]);
+var desiredShows = int.Parse(args[0]);
+var maxActorsPerShow = int.Parse(args[1]);
 
 #region Management
 
@@ -62,8 +72,10 @@ void triggerSave() => autosaveHandle.Set();
 
 var autosaveTask = Task.Run(async () =>
 {
+#pragma warning disable CS0162 // Unreachable code detected
     if (!ENABLE_AUTOSAVE)
         return;
+#pragma warning restore CS0162 // Unreachable code detected
 
     var waitingStuff = new WaitHandle[] { shutdownHandle, autosaveHandle };
 
@@ -90,15 +102,20 @@ if (SCRAPE_SHOW_HEADERS && !reader.ShutdownRequested)
     for (DateTime date = startDate; date.Year > 1990 && !reader.ShutdownRequested; date = date.Subtract(TimeSpan.FromDays(SearchSpan)))
         datesToSearch.Add(date);
 
-    for (int u = 0; u < 10000 && !reader.ShutdownRequested; u += 2000)
+    for (int u = 0; u < 10000 && !reader.ShutdownRequested && db.Shows.Count < desiredShows; u += 2000)
     {
+        var maxThreads = (desiredShows / 250) + 1;
+
+        if (maxThreads > 16)
+            maxThreads = 0;
+
         await reader.ParallelOp(datesToSearch, $"Scraping top {u + 2000} shows monthly", async (date) =>
         {
             var endDate = date.AddDays(SearchSpan);
             int showsOnDate = 0;
             int i = u + 1;
 
-            while (showsOnDate < 2000 && !reader.ShutdownRequested)
+            while (showsOnDate < 2000 && !reader.ShutdownRequested && db.Shows.Count < desiredShows)
             {
                 var fetched = await reader.ScrapeHeadersFromSearchPage(date, endDate, i);
                 if (fetched.Count == 0)
@@ -109,11 +126,14 @@ if (SCRAPE_SHOW_HEADERS && !reader.ShutdownRequested)
                 fetched.ForEach(db.Merge);
             }
 
-            lock (Console.Out)
+            if (showsOnDate != 0)
             {
-                reader.ConsoleWriteLine($"Collected {showsOnDate} Shows {date:M/d/yyyy} to {endDate:M/d/yyyy}\t\t({db.ShowHeaders.Count} total)");
+                lock (Console.Out)
+                {
+                    reader.ConsoleWriteLine($"Collected {showsOnDate} Shows {date:M/d/yyyy} to {endDate:M/d/yyyy}\t\t({db.ShowHeaders.Count} total)");
+                }
             }
-        });
+        }, maxThreads);
     }
 }
 
@@ -166,7 +186,7 @@ if (SCRAPE_EPISODES && !reader.ShutdownRequested)
 
 if (SCRAPE_SHOW_CAST && !reader.ShutdownRequested)
 {
-    await reader.ParallelOp(db.Shows, "Scraping Show Credits", async show => await reader.ScrapeCredits(show, db));
+    await reader.ParallelOp(db.Shows, "Scraping Show Credits", async show => await reader.ScrapeCredits(show, db, maxActorsPerShow));
 
     triggerSave();
 }
@@ -185,8 +205,10 @@ if (SCRAPE_PEOPLE_DATA && !reader.ShutdownRequested)
 
 if (SCRAPE_TRAILER_THUMBNAILS && !reader.ShutdownRequested)
 {
+#pragma warning disable CS8604 // Possible null reference argument.
     await reader.ParallelOp(db.Shows.Select(s => s.trailerThumbnailUrl).Where(url => !string.IsNullOrEmpty(url)).Distinct().ToList(),
         "Scraping Trailer Thumbnails", async (url) => await reader.ScrapeImage(url, db.GetLocalImagePath(url)));
+#pragma warning restore CS8604 // Possible null reference argument.
 
     foreach (var show in db.Shows)
     {
@@ -204,7 +226,9 @@ if (SCRAPE_SHOW_POSTERS && !reader.ShutdownRequested)
     await reader.ParallelOp(db.ShowHeaders.Select(h => h.posterUrl).Where(url => !string.IsNullOrEmpty(url)).Distinct().ToList(),
         "Scraping Posters", async (url) =>
         {
+#pragma warning disable CS8604 // Possible null reference argument.
             await reader.ScrapeImage(url, db.GetLocalImagePath(url));
+#pragma warning restore CS8604 // Possible null reference argument.
         });
 
     foreach (var header in db.ShowHeaders)
@@ -223,8 +247,10 @@ if (SCRAPE_SHOW_POSTERS && !reader.ShutdownRequested)
 
 if (SCRAPE_PEOPLE_IMAGES && !reader.ShutdownRequested)
 {
+#pragma warning disable CS8604 // Possible null reference argument.
     await reader.ParallelOp(db.People.Select(p => p.imageUrl).Where(url => !string.IsNullOrEmpty(url)).Distinct().ToList(),
         "Scraping Person Images", async url => await reader.ScrapeImage(url, db.GetLocalImagePath(url)));
+#pragma warning restore CS8604 // Possible null reference argument.
 
     foreach (var person in db.People)
     {
@@ -242,10 +268,10 @@ await db.SaveAll();
 
 if (VALIDATE_DB)
 {
-    if (File.Exists(TheStarsDB.AnalysisPath))
-        File.Delete(TheStarsDB.AnalysisPath);
+    if (File.Exists(db.AnalysisPath))
+        File.Delete(db.AnalysisPath);
 
-    using (var f = File.OpenWrite(TheStarsDB.AnalysisPath))
+    using (var f = File.OpenWrite(db.AnalysisPath))
     {
         using (var w = new StreamWriter(f))
         {
@@ -522,7 +548,9 @@ if (VALIDATE_DB)
 
             writeHeader("Data Quality Check");
 
+#pragma warning disable CS8603 // Possible null reference return.
             var uniqueGenres = db.Shows.Where(s => s.genre != null).SelectMany(s => s.genre).Distinct();
+#pragma warning restore CS8603 // Possible null reference return.
             w.WriteLine("Unique Genres Identified:");
             w.WriteLine(string.Join(',', uniqueGenres));
             w.WriteLine();

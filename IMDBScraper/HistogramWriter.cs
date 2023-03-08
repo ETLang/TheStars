@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -46,12 +46,15 @@ namespace IMDBScraper
 
             int lowerBound, upperBound;
 
+            if (pts.Length == 0) return;
+
             var min = pts.Min();
             var max = pts.Max();
             var barMax = (outputHeight - 3) * (bar.Length - 1);
-            int[] buckets = null;
+            int[] buckets;
 
-            for(int i = 0;i < 2;i++)
+            int bucketLoop = 0;
+            do
             {
                 buckets = bucketize(pts, min, max, bucketCount);
                 normalize(buckets, barMax);
@@ -65,7 +68,8 @@ namespace IMDBScraper
                 // Correct min and max to better values, then regenerate the histogram
                 max = min + step * (upperBound + 1);
                 min = min + step * lowerBound;
-            }
+                bucketLoop++;
+            } while (bucketLoop < 2);
 
             var yMax = buckets.Max();
             var yMaxText = yMax.ToString();
